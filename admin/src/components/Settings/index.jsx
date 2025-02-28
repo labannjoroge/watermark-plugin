@@ -5,6 +5,9 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useWatermark } from "../../hooks/useWatermark";
 import PreviewHandler from "./PreviewHandler";
+import { LoadingSpinner } from "../common/LoadingSpinner";
+import { validateWatermarkSettings } from "../../utils/validation"
+
 
 const Settings = () => {
   const {
@@ -35,37 +38,27 @@ const Settings = () => {
   };
 
   const handleSubmit = async (e) => {
-    e.preventDefault();
+    e.preventDefault()
+    setFormErrors({})
 
-    // Basic validation
-    if (localSettings.opacity < 0 || localSettings.opacity > 100) {
-      alert("Opacity must be between 0 and 100");
-      return;
-    }
-
-    if (localSettings.size < 1 || localSettings.size > 100) {
-      alert("Size must be between 1 and 100");
-      return;
-    }
-
-    if (localSettings.rotation < 0 || localSettings.rotation > 360) {
-      alert("Rotation must be between 0 and 360 degrees");
-      return;
+    const { isValid, errors } = validateWatermarkSettings(localSettings)
+    if (!isValid) {
+      setFormErrors(errors)
+      return
     }
 
     try {
       // First update local context
-      await updateSettings(localSettings);
+      await updateSettings(localSettings)
+      // save the same settings to backend
+      const result = await saveSettings(localSettings)
 
-      // Then save the same settings to backend
-      const success = await saveSettings(localSettings);
-
-      if (success) {
-        setSuccessMessage("Settings saved successfully");
-        setTimeout(() => setSuccessMessage(""), 3000);
+      if (result.success) {
+        setSuccessMessage("Settings saved successfully")
+        setTimeout(() => setSuccessMessage(""), 3000)
       }
     } catch (err) {
-      console.error("Error saving settings:", err);
+      setError(err instanceof Error ? err.message : "Failed to save settings")
     }
   };
 
@@ -113,6 +106,10 @@ const Settings = () => {
   const removeWatermark = () => {
     handleInputChange("watermarkImage", "");
   };
+
+  if (isLoading) {
+    return <LoadingSpinner size="large" className="mt-8" />;
+  }
 
   return (
     <div className="p-6 flex gap-6">
@@ -284,7 +281,11 @@ const Settings = () => {
                     className="w-full bg-black text-white py-2 rounded-lg hover:bg-gray-800 transition-colors disabled:bg-gray-400"
                     disabled={isLoading}
                   >
-                    {isLoading ? "Saving..." : "Save Settings"}
+                    {isLoading ? (
+                      <LoadingSpinner size="small" />
+                    ) : (
+                      "Save Settings"
+                    )}
                   </button>
 
                   {successMessage && (

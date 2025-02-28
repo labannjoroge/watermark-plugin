@@ -1,5 +1,20 @@
 import React from 'react';
 
+/**
+ * @typedef {Object} ButtonProps
+ * @property {React.ReactNode} children - Button content
+ * @property {string} [className=''] - Additional class names
+ * @property {'default' | 'destructive' | 'outline' | 'secondary' | 'ghost' | 'link'} [variant='default'] - Button style variant
+ * @property {'default' | 'sm' | 'lg' | 'icon'} [size='default'] - Button size
+ * @property {boolean} [disabled=false] - Whether the button is disabled
+ * @property {'button' | 'submit' | 'reset'} [type='button'] - Button HTML type
+ * @property {Function} [onClick] - Click handler
+ */
+
+/**
+ * Button component with different variants and sizes
+ * @type {React.ForwardRefExoticComponent<ButtonProps & React.RefAttributes<HTMLButtonElement>>}
+ */
 const Button = React.forwardRef(({ 
   children,
   className = '',

@@ -14,6 +14,14 @@ export const Alert = ({ children, variant = 'default', className = '' }) => {
   );
 };
 
+export const AlertTitle = ({ children, className = '' }) => {
+  return (
+    <div className={`text-lg font-semibold ${className}`}>
+      {children}
+    </div>
+  );
+};
+
 export const AlertDescription = ({ children, className = '' }) => {
   return (
     <div className={`text-sm ${className}`}>

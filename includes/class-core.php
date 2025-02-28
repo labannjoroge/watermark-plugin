@@ -1,145 +1,103 @@
 <?php
-/**
- * Core functionality for the  Watermark Manager plugin.
- *
- * @package    WatermarkManager
- * @subpackage Includes
- * @since      1.0.0
- */
+declare(strict_types=1);
 
 namespace WatermarkManager\Includes;
 
 use WatermarkManager\Admin\Admin;
-use WatermarkManager\Includes\ContentWatermark;
-use WatermarkManager\Includes\ImageWatermark;
-
+use WatermarkManager\PluginConstants;
 /**
- * Core Class
- *
- * Handles the core functionality of the plugin including service initialization,
- * hook registration, and coordination between different plugin components.
- *
- * @since 1.0.0
+ * Core functionality for the Watermark Manager plugin.
  */
-class Core
-{
-    /**
-     * Service container
-     *
-     * @since  1.0.0
-     * @access private
-     * @var    array
-     */
+class Core {
+    private const PLUGIN_NAME = 'watermark-manager';
+    
+    /** @var array<string, object> */
     private array $services = [];
-
-    /**
-     * The loader that's responsible for maintaining and registering all hooks.
-     *
-     * @since  1.0.0
-     * @access private
-     * @var    Loader
-     */
+    private Logger $logger;
     private Loader $loader;
+    private string $version;
+    private Admin $admin;
+    private $cleanup;
 
-    /**
-     * The unique identifier of this plugin.
-     *
-     * @since  1.0.0
-     * @access protected
-     * @var    string
-     */
-    protected $plugin_name;
-
-    /**
-     * The current version of the plugin.
-     *
-     * @since  1.0.0
-     * @access protected
-     * @var    string
-     */
-    protected $version;
-
-    protected $admin;
     /**
      * Initialize the class and set its properties.
-     *
-     * @since 1.0.0
      */
-    public function __construct()
-    {
-        $this->plugin_name = 'watermark-manager';
-        $this->version = WM_VERSION;
-        $this->loader = new Loader();
-        $this->init_services();
-        $this->register_hooks();
+    public function __construct() {
+        try {
+            $this->version = PluginConstants::VERSION;
+            $this->loader = new Loader();
+            $this->logger = Logger::get_instance();
+            $this->cleanup = new Cleanup();
+
+            $this->init_services();
+            $this->register_hooks();
+            $this->cleanup->schedule_cleanup();
+        } catch (\Exception $e) {
+            $this->logger->error('Core initialization failed: ' . $e->getMessage());
+            add_action('admin_notices', [$this, 'display_initialization_error']);
+        }
     }
 
     /**
      * Initialize plugin services
-     *
-     * @since  1.0.0
-     * @access private
-     * @return void
      */
-    private function init_services(): void
-    {
-        // Initialize core services
-        $this->services['image_watermark'] = new ImageWatermark();
-        $this->services['content_watermark'] = new ContentWatermark();
-        $this->services['admin'] = new Admin($this->plugin_name, $this->version);
+    private function init_services(): void {
+        try {
+            $this->services['image_watermark'] = new ImageWatermark();
+            $this->services['admin'] = new Admin(self::PLUGIN_NAME, $this->version);
+        } catch (\Exception $e) {
+            $this->logger->error('Service initialization failed: ' . $e->getMessage());
+            throw $e;
+        }
     }
 
     /**
      * Register all hooks for the plugin.
-     *
-     * @since  1.0.0
-     * @access private
-     * @return void
      */
-    private function register_hooks(): void
-    {
-        // Admin hooks
-        $this->loader->add_action('admin_enqueue_scripts', $this->services['admin'], 'enqueue_styles');
-        $this->loader->add_action('admin_enqueue_scripts', $this->services['admin'], 'enqueue_scripts');
-        $this->loader->add_action('admin_menu', $this->services['admin'], 'add_plugin_admin_menu');
-        $this->loader->add_filter('plugin_action_links_' . WM_PLUGIN_BASENAME, $this->services['admin'], 'add_action_links');
+    private function register_hooks(): void {
+        try {
+            // Admin hooks
+            $this->loader->add_action('admin_enqueue_scripts', $this->services['admin'], 'enqueue_styles');
+            $this->loader->add_action('admin_enqueue_scripts', $this->services['admin'], 'enqueue_scripts');
+            $this->loader->add_action('admin_menu', $this->services['admin'], 'add_plugin_admin_menu');
+            $this->loader->add_filter(
+                'plugin_action_links_' . WM_PLUGIN_BASENAME,
+                $this->services['admin'],
+                'add_action_links'
+            );
 
-        // Image processing hooks
-        $this->loader->add_filter('wp_generate_attachment_metadata', $this, 'process_image', 10, 2);
-        $this->loader->add_action('delete_attachment', $this, 'cleanup_watermarks');
+            // Image processing hooks
+            $this->loader->add_filter('wp_generate_attachment_metadata', $this, 'process_image', 10, 2);
+            $this->loader->add_action('delete_attachment', $this, 'cleanup_watermarks');
 
-        // Schedule watermark application
-        add_action('init', [$this, 'schedule_watermark_application']);
+            // Schedule watermark application
+            add_action('init', [$this, 'schedule_watermark_application']);
 
-        $this->loader->add_action('delete_attachment', $this->services['image_watermark'], 'clear_watermark_path_cache');
+            $this->loader->add_action(
+                'delete_attachment',
+                $this->services['image_watermark'],
+                'clear_watermark_path_cache'
+            );
+        } catch (\Exception $e) {
+            $this->logger->error('Hook registration failed: ' . $e->getMessage());
+            throw $e;
+        }
     }
 
     /**
      * Process uploaded images for watermarking
-     *
-     * @since  1.0.0
-     * @access public
-     * @param  array $metadata      Attachment metadata
-     * @param  int   $attachment_id Attachment ID
-     * @return array
      */
-    public function process_image(array $metadata, int $attachment_id): array
-    {
+    public function process_image(array $metadata, int $attachment_id): array {
         try {
-            // Check if image should be watermarked
             if (!$this->should_watermark($attachment_id)) {
                 return $metadata;
             }
 
-            // Get watermark settings
             $settings = get_option('WM_image_settings', []);
-
-            // Process the image
             return $this->services['image_watermark']->process($metadata, $attachment_id, $settings);
         } catch (\Exception $e) {
-            // Log error and return original metadata
-            error_log(sprintf(
-                '[ Watermark Manager] Error processing image %d: %s',
+            $this->logger->error(sprintf(
+                'Error processing image %d: %s',
                 $attachment_id,
                 $e->getMessage()
             ));
@@ -149,60 +107,80 @@ class Core
 
     /**
      * Check if an image should be watermarked
-     *
-     * @since  1.0.0
-     * @access private
-     * @param  int $attachment_id Attachment ID
-     * @return bool
      */
-    private function should_watermark(int $attachment_id): bool
-    {
-        // Get settings
-        $settings = get_option('WM_image_settings', []);
-        if (empty($settings['enabled'])) {
+    private function should_watermark(int $attachment_id): bool {
+        try {
+            $settings = get_option('WM_image_settings', []);
+            if (empty($settings['enabled'])) {
+                return false;
+            }
+
+            $mime_type = get_post_mime_type($attachment_id);
+            $allowed_types = ['image/jpeg', 'image/png', 'image/gif'];
+            if (!in_array($mime_type, $allowed_types, true)) {
+                return false;
+            }
+
+            $metadata = wp_get_attachment_metadata($attachment_id);
+            if (!empty($settings['min_width']) && $metadata['width'] < $settings['min_width']) {
+                return false;
+            }
+
+            return (bool) apply_filters('WM_should_watermark_image', true, $attachment_id, $settings);
+        } catch (\Exception $e) {
+            $this->logger->error('Error checking watermark conditions: ' . $e->getMessage());
             return false;
         }
-
-        // Check mime type
-        $mime_type = get_post_mime_type($attachment_id);
-        $allowed_types = ['image/jpeg', 'image/png', 'image/gif'];
-        if (!in_array($mime_type, $allowed_types, true)) {
-            return false;
-        }
-
-        // Check image dimensions
-        $metadata = wp_get_attachment_metadata($attachment_id);
-        if (!empty($settings['min_width']) && $metadata['width'] < $settings['min_width']) {
-            return false;
-        }
-
-        // Allow filtering
-        return apply_filters('WM_should_watermark_image', true, $attachment_id, $settings);
     }
 
-    public function schedule_watermark_application()
-    {
-        add_action('WM_apply_watermark_to_attachment', [$this->services['image_watermark'], 'apply_watermark'], 10, 1);
+    /**
+     * Schedule watermark application
+     */
+    public function schedule_watermark_application(): void {
+        try {
+            add_action(
+                'WM_apply_watermark_to_attachment',
+                [$this->services['image_watermark'], 'apply_watermark'],
+                10,
+                1
+            );
+        } catch (\Exception $e) {
+            $this->logger->error('Failed to schedule watermark application: ' . $e->getMessage());
+        }
     }
 
-    public function cleanup_watermarks(int $attachment_id): void
-    {
+    /**
+     * Clean up watermarks when attachment is deleted
+     */
+    public function cleanup_watermarks(int $attachment_id): void {
         try {
             $this->services['image_watermark']->cleanup($attachment_id);
         } catch (\Exception $e) {
-            error_log(sprintf('[ Watermark Manager] Error cleaning up watermarks for attachment %d: %s', $attachment_id, $e->getMessage()));
+            $this->logger->error(sprintf(
+                'Error cleaning up watermarks for attachment %d: %s',
+                $attachment_id,
+                $e->getMessage()
+            ));
         }
     }
 
     /**
      * Run the loader to execute all registered hooks
-     *
-     * @since  1.0.0
-     * @access public
-     * @return void
      */
-    public function run(): void
-    {
-        $this->loader->run();
+    public function run(): void {
+        try {
+            $this->loader->run();
+        } catch (\Exception $e) {
+            $this->logger->error('Failed to run hooks: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Display initialization error notice
+     */
+    public function display_initialization_error(): void {
+        $class = 'notice notice-error';
+        $message = esc_html__('Watermark Manager failed to initialize properly. Please check error logs.', 'watermark-manager');
+        printf('<div class="%1$s"><p>%2$s</p></div>', esc_attr($class), esc_html($message));
     }
 }

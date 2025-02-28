@@ -4,7 +4,6 @@ namespace WatermarkManager\Admin;
 
 use WatermarkManager\Includes\Database;
 use WatermarkManager\Includes\ImageWatermark;
-use WatermarkManager\Includes\ContentWatermark;
 
 class Admin
 {
@@ -51,8 +50,9 @@ class Admin
         wp_deregister_script('react');
         wp_deregister_script('react-dom');
 
-        wp_enqueue_script('react', 'https://unpkg.com/react@18.2.0/umd/react.development.js', [], '18.2.0', true);
-        wp_enqueue_script('react-dom', 'https://unpkg.com/react-dom@18.2.0/umd/react-dom.development.js', ['react'], '18.2.0', true);
+        // Load React from plugin bundled files instead of external CDN
+        wp_enqueue_script('react', WM_PLUGIN_URL . 'admin/build/js/react.min.js', [], '18.2.0', true);
+        wp_enqueue_script('react-dom', WM_PLUGIN_URL . 'admin/build/js/react-dom.min.js', ['react'], '18.2.0', true);
 
         // Enqueue your app
         wp_enqueue_script(
@@ -73,10 +73,14 @@ class Admin
 
     public function display_plugin_admin_page()
     {
-        $current_page = isset($_GET['page']) ? sanitize_text_field($_GET['page']) : 'watermark-manager';
-        $sub_page = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'settings';
+        // Properly unslash and sanitize GET parameters
+        $current_page = isset($_GET['page']) ? sanitize_text_field(wp_unslash($_GET['page'])) : 'watermark-manager';
+        $sub_page = isset($_GET['tab']) ? sanitize_text_field(wp_unslash($_GET['tab'])) : 'settings';
 
-        echo '<div id="WM-admin-app" data-page="' . esc_attr($current_page) . '" data-tab="' . esc_attr($sub_page) . '"></div>';
+        // Add nonce for any form actions
+        $nonce = wp_create_nonce('watermark_manager_page_action');
+        
+        echo '<div id="WM-admin-app" data-page="' . esc_attr($current_page) . '" data-tab="' . esc_attr($sub_page) . '" data-nonce="' . esc_attr($nonce) . '"></div>';
     }
 
     public function add_plugin_admin_menu()
@@ -91,12 +95,15 @@ class Admin
             81
         );
 
+        // Add proper nonce to these URLs
+        $nonce = wp_create_nonce('watermark_manager_menu_action');
+        
         add_submenu_page(
             'watermark-manager',
             'Bulk Watermark',
             'Bulk Watermark',
             'manage_options',
-            'watermark-manager&tab=bulk',
+            'watermark-manager&tab=bulk&_wpnonce=' . $nonce,
             [$this, 'display_plugin_admin_page']
         );
 
@@ -105,35 +112,67 @@ class Admin
             'Manage Images',
             'Manage Images',
             'manage_options',
-            'watermark-manager&tab=manage',
+            'watermark-manager&tab=manage&_wpnonce=' . $nonce,
             [$this, 'display_plugin_admin_page']
         );
     }
 
- 
     public function add_action_links($links)
     {
+        $nonce = wp_create_nonce('watermark_manager_action_link');
         $settings_link = [
-            '<a href="' . admin_url('admin.php?page=watermark-manager') . '">' . __('Settings', 'watermark-manager') . '</a>',
+            '<a href="' . admin_url('admin.php?page=watermark-manager&_wpnonce=' . $nonce) . '">' . __('Settings', 'watermark-manager') . '</a>',
         ];
         return array_merge($settings_link, $links);
     }
 
     public function register_settings()
     {
-        register_setting('WM_options', 'WM_options', [$this, 'validate_options']);
+        register_setting(
+            'WM_options', 
+            'WM_options', 
+            [
+                'sanitize_callback' => [$this, 'validate_options'],
+                'default' => [
+                    'watermark_image' => '',
+                    'watermark_position' => 'bottom-right',
+                    'watermark_opacity' => 50,
+                    'watermark_size' => 50,
+                    'watermark_rotation' => 0,
+                    'auto_watermark' => false,
+                    'backup_originals' => false,
+                ]
+            ]
+        );
     }
 
     public function validate_options($input)
     {
         $valid = [];
 
-        // Validate and sanitize each option
+        // Validate and sanitize each option with improved validation
         $valid['watermark_image'] = isset($input['watermark_image']) ? esc_url_raw($input['watermark_image']) : '';
-        $valid['watermark_position'] = isset($input['watermark_position']) ? sanitize_text_field($input['watermark_position']) : 'bottom-right';
-        $valid['watermark_opacity'] = isset($input['watermark_opacity']) ? intval($input['watermark_opacity']) : 50;
-        $valid['watermark_size'] = isset($input['watermark_size']) ? intval($input['watermark_size']) : 50;
-        $valid['watermark_rotation'] = isset($input['watermark_rotation']) ? intval($input['watermark_rotation']) : 0;
+        
+        // Position - restrict to allowed values
+        $allowed_positions = ['top-left', 'top-center', 'top-right', 'middle-left', 'middle-center', 
+                             'middle-right', 'bottom-left', 'bottom-center', 'bottom-right'];
+        $valid['watermark_position'] = isset($input['watermark_position']) && 
+                                      in_array($input['watermark_position'], $allowed_positions, true) ? 
+                                      $input['watermark_position'] : 'bottom-right';
+        
+        // Opacity - ensure it's between 0 and 100
+        $opacity = isset($input['watermark_opacity']) ? intval($input['watermark_opacity']) : 50;
+        $valid['watermark_opacity'] = max(0, min(100, $opacity));
+        
+        // Size - ensure it's between 1 and 100
+        $size = isset($input['watermark_size']) ? intval($input['watermark_size']) : 50;
+        $valid['watermark_size'] = max(1, min(100, $size));
+        
+        // Rotation - ensure it's between 0 and 359
+        $rotation = isset($input['watermark_rotation']) ? intval($input['watermark_rotation']) : 0;
+        $valid['watermark_rotation'] = $rotation % 360;
+        
+        // Boolean values
         $valid['auto_watermark'] = isset($input['auto_watermark']) ? (bool) $input['auto_watermark'] : false;
         $valid['backup_originals'] = isset($input['backup_originals']) ? (bool) $input['backup_originals'] : false;
 
@@ -146,4 +185,3 @@ class Admin
         $rest_controller->register_routes();
     }
 }
-

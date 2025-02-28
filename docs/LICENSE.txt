@@ -1,0 +1,46 @@
+Watermark Manager WordPress Plugin
+Copyright (C) 2023 Labantheegreat
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+
+== Third-Party Licenses ==
+
+This plugin includes several third-party libraries, all with GPL-compatible licenses:
+
+1. React - MIT License
+Copyright (c) Meta Platforms, Inc. and affiliates.
+[https://github.com/facebook/react/blob/main/LICENSE]
+
+2. React DOM - MIT License
+Copyright (c) Meta Platforms, Inc. and affiliates.
+[https://github.com/facebook/react/blob/main/LICENSE]
+
+3. Radix UI - MIT License
+Copyright (c) 2022 WorkOS
+[https://github.com/radix-ui/primitives/blob/main/LICENSE]
+
+4. Lucide React - ISC License
+Copyright (c) 2020, Lucide Contributors
+[https://github.com/lucide-icons/lucide/blob/main/LICENSE]
+
+5. TailwindCSS - MIT License
+Copyright (c) Tailwind Labs, Inc.
+[https://github.com/tailwindlabs/tailwindcss/blob/master/LICENSE]
+
+6. Classnames - MIT License
+Copyright (c) 2018 Jed Watson
+[https://github.com/JedWatson/classnames/blob/master/LICENSE]
+
+All third-party libraries are used in compliance with their respective licenses.

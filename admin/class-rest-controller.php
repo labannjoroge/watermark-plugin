@@ -6,17 +6,22 @@ use WP_REST_Request;
 use WP_REST_Response;
 use WP_Error;
 use WatermarkManager\Includes\ImageWatermark;
+use WatermarkManager\Includes\Logger;
 
 use WatermarkManager\Includes\SettingsHandler;
 use Exception;
 class RestController
 {
     private const API_NAMESPACE = 'WM/v1';
+    private const RATE_LIMIT_DURATION = 60; // 60 seconds
+    private const RATE_LIMIT_REQUESTS = 10; // 10 requests per minute
     private $image_watermark;
+    private $logger;
 
     public function __construct()
     {
         $this->image_watermark = new ImageWatermark();
+        $this->logger = Logger::get_instance();
         add_action('rest_api_init', [$this, 'register_routes']);
     }
 
@@ -116,7 +121,7 @@ class RestController
         register_rest_route(self::API_NAMESPACE, '/watermark-all', [
             'methods' => 'POST',
             'callback' => [$this, 'watermark_all_images'],
-            'permission_callback' => [$this, 'permissions_check'],
+            'permission_callback' => [$this, 'check_admin_permissions'],
         ]);
     }
 
@@ -125,26 +130,28 @@ class RestController
         return current_user_can('manage_options');
     }
 
-    public function get_settings(): WP_REST_Response {
+    public function get_settings(): WP_REST_Response
+    {
         $settings = SettingsHandler::get_settings();
         $prepared_settings = SettingsHandler::prepare_for_response($settings);
         return new WP_REST_Response($prepared_settings, 200);
     }
-    
-    public function update_settings(WP_REST_Request $request): WP_REST_Response {
+
+    public function update_settings(WP_REST_Request $request): WP_REST_Response
+    {
         $settings = $request->get_params();
         $result = SettingsHandler::update_settings($settings);
-    
+
         if (is_wp_error($result)) {
             return new WP_REST_Response([
                 'error' => $result->get_error_message(),
                 'details' => $result->get_error_data()
             ], 400);
         }
-    
+
         $updated_settings = SettingsHandler::get_settings();
         $prepared_settings = SettingsHandler::prepare_for_response($updated_settings);
-    
+
         return new WP_REST_Response([
             'message' => 'Settings updated successfully',
             'settings' => $prepared_settings
@@ -200,97 +207,6 @@ class RestController
         }
 
         return $errors;
-    }
-
-    private function prepare_settings_for_response(array $settings): array
-    {
-        try {
-            $response_settings = $settings;
-
-            // Handle watermarkImage
-            if (!empty($response_settings['watermarkImage'])) {
-                if (is_numeric($response_settings['watermarkImage'])) {
-                    $image_url = wp_get_attachment_url($response_settings['watermarkImage']);
-                    if (!$image_url) {
-                        throw new Exception('Failed to get watermark image URL');
-                    }
-                    $response_settings['watermarkImage'] = $image_url;
-                }
-            }
-
-            // Ensure all required fields exist with proper types
-            $defaults = [
-                'position' => 'bottom-right',
-                'opacity' => 50,
-                'size' => 50,
-                'rotation' => 0,
-                'autoWatermark' => false,
-                'backupOriginals' => true
-            ];
-
-            foreach ($defaults as $key => $default_value) {
-                if (!isset($response_settings[$key])) {
-                    $response_settings[$key] = $default_value;
-                }
-
-                // Type casting for boolean values
-                if (in_array($key, ['autoWatermark', 'backupOriginals'])) {
-                    $response_settings[$key] = (bool) $response_settings[$key];
-                }
-
-                // Type casting for numeric values
-                if (in_array($key, ['opacity', 'size', 'rotation'])) {
-                    $response_settings[$key] = (int) $response_settings[$key];
-                }
-            }
-
-            return $response_settings;
-
-        } catch (Exception $e) {
-            error_log('Error preparing settings response: ' . $e->getMessage());
-            throw $e;
-        }
-    }
-
-    private function sanitize_settings(array $settings): array
-    {
-        $sanitized = [];
-
-        // Handle watermarkImage - support both URL and attachment ID
-        if (isset($settings['watermarkImage'])) {
-            if (is_numeric($settings['watermarkImage'])) {
-                $sanitized['watermarkImage'] = absint($settings['watermarkImage']);
-            } else {
-                $sanitized['watermarkImage'] = esc_url_raw($settings['watermarkImage']);
-            }
-        }
-
-        if (isset($settings['position']) && in_array($settings['position'], ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center'])) {
-            $sanitized['position'] = sanitize_text_field($settings['position']);
-        }
-
-        if (isset($settings['opacity']) && is_numeric($settings['opacity'])) {
-            $sanitized['opacity'] = max(0, min(100, intval($settings['opacity'])));
-        }
-
-        if (isset($settings['size']) && is_numeric($settings['size'])) {
-            $sanitized['size'] = max(1, min(100, intval($settings['size'])));
-        }
-
-        if (isset($settings['rotation']) && is_numeric($settings['rotation'])) {
-            $sanitized['rotation'] = max(0, min(360, intval($settings['rotation'])));
-        }
-
-        // Handle boolean values
-        if (isset($settings['autoWatermark'])) {
-            $sanitized['autoWatermark'] = (bool) $settings['autoWatermark'];
-        }
-
-        if (isset($settings['backupOriginals'])) {
-            $sanitized['backupOriginals'] = (bool) $settings['backupOriginals'];
-        }
-
-        return $sanitized;
     }
 
     public function generate_preview(WP_REST_Request $request): WP_REST_Response
@@ -355,7 +271,7 @@ class RestController
             ], 200);
 
         } catch (Exception $e) {
-            error_log('Preview generation error: ' . $e->getMessage());
+            $this->logger->error('Preview generation error: ' . $e->getMessage());
             return new WP_REST_Response([
                 'error' => 'Failed to generate preview: ' . $e->getMessage()
             ], 500);
@@ -363,19 +279,20 @@ class RestController
     }
 
     public function restore_original($request)
-{
-    $image_id = $request['id'];
-    error_log('Attempting to restore image with ID: ' . $image_id);
-    
-    $result = $this->image_watermark->restore_original($image_id);
-    if (is_wp_error($result)) {
-        error_log('Restore failed: ' . $result->get_error_message());
-        return new WP_Error('uwm_restore_failed', $result->get_error_message(), ['status' => 400]);
+    {
+        $image_id = $request['id'];
+        $this->logger->info('Attempting to restore image with ID: ' . $image_id);
+
+        $result = $this->image_watermark->restore_original($image_id);
+        if (is_wp_error($result)) {
+            $this->logger->error('Restore failed: ' . $result->get_error_message());
+            
+            return new WP_Error('uwm_restore_failed', $result->get_error_message(), ['status' => 400]);
+        }
+
+        $this->logger->info('Image restored successfully');
+        return rest_ensure_response(['success' => true]);
     }
-    
-    error_log('Image restored successfully');
-    return rest_ensure_response(['success' => true]);
-}
 
     public function get_watermarked_images($request)
     {
@@ -416,39 +333,46 @@ class RestController
         return rest_ensure_response($images);
     }
 
-    public function bulk_watermark($request)
+    public function bulk_watermark(WP_REST_Request $request)
     {
-        // Check user capabilities
-        if (!current_user_can('manage_options')) {
-            return new WP_Error('insufficient_permissions', 'You do not have permission to perform this action.', ['status' => 403]);
+        // Check rate limit
+        if (!$this->check_rate_limit()) {
+            return new WP_Error(
+                'rate_limit_exceeded',
+                'Rate limit exceeded. Please try again later.',
+                ['status' => 429]
+            );
         }
 
-        // Get and validate parameters
-        $params = $request->get_json_params();
-        $image_ids = $params['imageIds'] ?? [];
-        $watermark_options = $params['watermarkOptions'] ?? [];
-
-        // Validate image IDs
-        if (empty($image_ids) || !is_array($image_ids)) {
-            return new WP_Error('invalid_image_ids', 'No valid image IDs provided.', ['status' => 400]);
+        // Validate request parameters
+        $validation_error = $this->validate_request_params($request, ['imageIds', 'watermarkOptions']);
+        if ($validation_error) {
+            return $validation_error;
         }
 
-        // Validate watermark options
-        $validation_result = $this->validate_watermark_options($watermark_options);
-        if (is_wp_error($validation_result)) {
-            return $validation_result;
-        }
-
-        // Start bulk watermarking process
         try {
-            $result = $this->image_watermark->bulk_watermark($image_ids, $watermark_options);
+            $params = $request->get_json_params();
+            $image_ids = $params['imageIds'];
+            $watermark_options = $params['watermarkOptions'];
 
-            if (is_wp_error($result)) {
-                throw new Exception($result->get_error_message());
+            // Validate image IDs
+            if (empty($image_ids) || !is_array($image_ids)) {
+                return new WP_Error('invalid_image_ids', 'No valid image IDs provided.', ['status' => 400]);
             }
 
-            // Log the successful operation
-            error_log('Bulk watermark operation completed. Success: ' . $result['success'] . ', Failed: ' . $result['failed']);
+            // Validate watermark options
+            $validation_result = $this->validate_watermark_options($watermark_options);
+            if (is_wp_error($validation_result)) {
+                return $validation_result;
+            }
+
+            /** @var array{success: int, failed: int, errors: string[]} $result */
+            $result = $this->image_watermark->bulk_watermark($image_ids, $watermark_options);
+
+            $this->logger->info('Bulk watermark completed', [
+                'success' => $result['success'],
+                'failed' => $result['failed']
+            ]);
 
             return rest_ensure_response([
                 'success' => true,
@@ -461,9 +385,9 @@ class RestController
             ]);
 
         } catch (Exception $e) {
-            error_log('Error in bulk_watermark: ' . $e->getMessage());
+            $this->logger->error('Bulk watermark failed: ' . $e->getMessage());
             return new WP_Error(
-                'uwm_bulk_watermark_failed',
+                'bulk_watermark_failed',
                 'An error occurred during bulk watermarking: ' . $e->getMessage(),
                 ['status' => 500]
             );
@@ -490,12 +414,10 @@ class RestController
         try {
             $result = $this->image_watermark->watermark_all_images($watermark_options);
 
-            if (is_wp_error($result)) {
-                throw new Exception($result->get_error_message());
-            }
-
-            // Log the successful operation
-            error_log('Watermark all images operation completed. Success: ' . $result['success'] . ', Failed: ' . $result['failed']);
+            $this->logger->info('watermark all images completed', [
+                'success' => $result['success'],
+                'failed' => $result['failed']
+            ]);
 
             return rest_ensure_response([
                 'success' => true,
@@ -508,7 +430,7 @@ class RestController
             ]);
 
         } catch (Exception $e) {
-            error_log('Error in watermark_all_images: ' . $e->getMessage());
+            $this->logger->error('Error in watermark_all_images: ' . $e->getMessage());
             return new WP_Error(
                 'uwm_watermark_all_failed',
                 'An error occurred while watermarking images: ' . $e->getMessage(),
@@ -554,4 +476,46 @@ class RestController
 
         return true;
     }
+
+
+    /**
+     * Validate request parameters
+     */
+    private function validate_request_params(WP_REST_Request $request, array $required_params = []): ?WP_Error
+    {
+        foreach ($required_params as $param) {
+            if (!$request->has_param($param)) {
+                return new WP_Error(
+                    'missing_parameter',
+                    sprintf('Missing required parameter: %s', $param),
+                    ['status' => 400]
+                );
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Check rate limit for current user
+     */
+    private function check_rate_limit(): bool
+    {
+        $user_id = get_current_user_id();
+        $transient_key = 'watermark_rate_limit_' . $user_id;
+
+        $requests = get_transient($transient_key);
+        if ($requests === false) {
+            set_transient($transient_key, 1, self::RATE_LIMIT_DURATION);
+            return true;
+        }
+
+        if ($requests >= self::RATE_LIMIT_REQUESTS) {
+            return false;
+        }
+
+        set_transient($transient_key, $requests + 1, self::RATE_LIMIT_DURATION);
+        return true;
+    }
+
 }

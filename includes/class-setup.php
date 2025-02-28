@@ -10,6 +10,7 @@
 namespace WatermarkManager\Includes;
 use WatermarkManager\Includes\Database;
 use WatermarkManager\Includes\FontSetup;
+use WatermarkManager\PluginConstants;
 
 // If this file is called directly, abort.
 if (!defined('WPINC')) {
@@ -23,7 +24,8 @@ if (!defined('WPINC')) {
  *
  * @since 1.0.0
  */
-class Setup {
+class Setup
+{
     /**
      * Plugin activation handler
      *
@@ -33,7 +35,15 @@ class Setup {
      * @access public
      * @return void
      */
-    public static function activate(): void {
+    public static function activate(): void
+    {
+        // Initialize WP_Filesystem
+        global $wp_filesystem;
+        if (empty($wp_filesystem)) {
+            require_once ABSPATH . '/wp-admin/includes/file.php';
+            WP_Filesystem();
+        }
+
         // Check if this is a fresh installation
         if (!get_option('WM_version')) {
             self::install();
@@ -61,7 +71,7 @@ class Setup {
         self::setup_react_build_directory();
 
         // Update version
-        update_option('WM_version', WM_VERSION);
+        update_option('WM_version', PluginConstants::VERSION);
 
         // Clear rewrite rules
         flush_rewrite_rules();
@@ -76,7 +86,8 @@ class Setup {
      * @access public
      * @return void
      */
-    public static function deactivate(): void {
+    public static function deactivate(): void
+    {
         // Clear scheduled events
         wp_clear_scheduled_hook('WM_daily_cleanup');
 
@@ -96,24 +107,17 @@ class Setup {
      * @access public
      * @return void
      */
-    public static function uninstall(): void {
+    public static function uninstall(): void
+    {
         // Remove all options
         delete_option('WM_version');
         delete_option('WM_image_watermark_options');
-        delete_option('WM_content_watermark_options');
 
         // Remove database tables
         Database::drop_table();
 
         // Remove all plugin directories
         self::remove_plugin_directories();
-    }
-
-    private static function setup_react_build_directory(): void {
-        $build_dir = WM_PLUGIN_DIR . 'admin/build';
-        if (!file_exists($build_dir)) {
-            wp_mkdir_p($build_dir);
-        }
     }
 
     /**
@@ -125,7 +129,8 @@ class Setup {
      * @access private
      * @return void
      */
-    private static function install(): void {
+    private static function install(): void
+    {
         // Create necessary directories
         self::setup_directories();
 
@@ -142,7 +147,8 @@ class Setup {
      * @access private
      * @return void
      */
-    private static function upgrade(): void {
+    private static function upgrade(): void
+    {
         $current_version = get_option('WM_version');
 
         // Version-specific upgrade routines
@@ -162,7 +168,10 @@ class Setup {
      * @access private
      * @return void
      */
-    private static function setup_directories(): void {
+    private static function setup_directories(): void
+    {
+        global $wp_filesystem;
+
         $upload_dir = wp_upload_dir();
         $directories = [
             $upload_dir['basedir'] . '/WM-watermarks',
@@ -171,10 +180,10 @@ class Setup {
         ];
 
         foreach ($directories as $directory) {
-            if (!file_exists($directory)) {
+            if (!$wp_filesystem->exists($directory)) {
                 wp_mkdir_p($directory);
-                file_put_contents($directory . '/.htaccess', 'deny from all');
-                file_put_contents($directory . '/index.php', '<?php // Silence is golden');
+                $wp_filesystem->put_contents($directory . '/.htaccess', 'deny from all', FS_CHMOD_FILE);
+                $wp_filesystem->put_contents($directory . '/index.php', '<?php // Silence is golden', FS_CHMOD_FILE);
             }
         }
     }
@@ -188,7 +197,10 @@ class Setup {
      * @access private
      * @return void
      */
-    private static function remove_plugin_directories(): void {
+    private static function remove_plugin_directories(): void
+    {
+        global $wp_filesystem;
+
         $upload_dir = wp_upload_dir();
         $directories = [
             $upload_dir['basedir'] . '/WM-watermarks',
@@ -197,7 +209,7 @@ class Setup {
         ];
 
         foreach ($directories as $directory) {
-            if (is_dir($directory)) {
+            if ($wp_filesystem->exists($directory) && $wp_filesystem->is_dir($directory)) {
                 self::recursive_remove_directory($directory);
             }
         }
@@ -212,7 +224,8 @@ class Setup {
      * @access private
      * @return void
      */
-    private static function set_default_options(): void {
+    private static function set_default_options(): void
+    {
         $default_image_options = [
             'enabled' => true,
             'position' => 'bottom-right',
@@ -238,9 +251,6 @@ class Setup {
             update_option('WM_image_watermark_options', $default_image_options);
         }
 
-        if (!get_option('WM_content_watermark_options')) {
-            update_option('WM_content_watermark_options', $default_content_options);
-        }
     }
 
     /**
@@ -252,9 +262,12 @@ class Setup {
      * @access private
      * @return void
      */
-    private static function cleanup_temp_files(): void {
+    private static function cleanup_temp_files(): void
+    {
+        global $wp_filesystem;
+
         $temp_dir = wp_upload_dir()['basedir'] . '/WM-temp';
-        if (is_dir($temp_dir)) {
+        if ($wp_filesystem->exists($temp_dir) && $wp_filesystem->is_dir($temp_dir)) {
             self::recursive_remove_directory($temp_dir);
         }
     }
@@ -262,27 +275,34 @@ class Setup {
     /**
      * Recursively remove a directory
      *
-     * Helper function to remove a directory and all its contents.
+     * Helper function to remove a directory and all its contents using WP_Filesystem.
      *
      * @since  1.0.0
      * @access private
      * @param  string $directory Directory path to remove
      * @return void
      */
-    private static function recursive_remove_directory(string $directory): void {
-        if (is_dir($directory)) {
-            $files = scandir($directory);
+    private static function recursive_remove_directory(string $directory): void
+    {
+        global $wp_filesystem;
+
+        if ($wp_filesystem->exists($directory) && $wp_filesystem->is_dir($directory)) {
+            $files = $wp_filesystem->dirlist($directory);
+
             foreach ($files as $file) {
-                if ($file !== '.' && $file !== '..') {
-                    $path = $directory . '/' . $file;
-                    if (is_dir($path)) {
-                        self::recursive_remove_directory($path);
-                    } else {
-                        unlink($path);
-                    }
+                $path = $directory . '/' . $file['name'];
+
+                if ($file['type'] === 'd') {
+                    // If it's a directory, recursively remove it
+                    self::recursive_remove_directory($path);
+                } else {
+                    // If it's a file, delete it
+                    wp_delete_file($path);
                 }
             }
-            rmdir($directory);
+
+            // Remove the empty directory
+            $wp_filesystem->rmdir($directory);
         }
     }
 
@@ -295,13 +315,63 @@ class Setup {
      * @access private
      * @return void
      */
-    private static function init_settings(): void {
+    private static function init_settings(): void
+    {
         // Register settings
-        register_setting('WM_image_options', 'WM_image_watermark_options');
-        register_setting('WM_content_options', 'WM_content_watermark_options');
+        register_setting(
+            'WM_image_options',
+            'WM_image_watermark_options',
+            [self::class, 'sanitize_image_watermark_options']
+        );
 
         // Set default options if they don't exist
         self::set_default_options();
+    }
+
+    /**
+     * Sanitize image watermark options
+     *
+     * @since  1.0.0
+     * @access private
+     * @param  array $input The input options to sanitize
+     * @return array Sanitized options
+     */
+    private static function sanitize_image_watermark_options(array $input): array
+    {
+        $sanitized_input = [];
+
+        // Sanitize boolean
+        $sanitized_input['enabled'] = isset($input['enabled']) ? (bool) $input['enabled'] : false;
+
+        // Sanitize position
+        $allowed_positions = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center'];
+        $sanitized_input['position'] = in_array($input['position'], $allowed_positions) ? $input['position'] : 'bottom-right';
+
+        // Sanitize opacity (ensure it's between 0 and 100)
+        $sanitized_input['opacity'] = min(max((int) $input['opacity'], 0), 100);
+
+        // Sanitize quality (ensure it's between 0 and 100)
+        $sanitized_input['quality'] = min(max((int) $input['quality'], 0), 100);
+
+        // Sanitize text
+        $sanitized_input['text'] = sanitize_text_field($input['text']);
+
+        // Sanitize font
+        $sanitized_input['font'] = sanitize_text_field($input['font']);
+
+        // Sanitize font size
+        $sanitized_input['font_size'] = min(max((int) $input['font_size'], 8), 72);
+
+        // Sanitize font color
+        $sanitized_input['font_color'] = sanitize_hex_color($input['font_color']);
+
+        // Sanitize padding
+        $sanitized_input['padding'] = min(max((int) $input['padding'], 0), 100);
+
+        // Sanitize background
+        $sanitized_input['background'] = sanitize_text_field($input['background']);
+
+        return $sanitized_input;
     }
 
     /**
@@ -313,16 +383,36 @@ class Setup {
      * @access private
      * @return void
      */
-    private static function upgrade_to_110(): void {
+    private static function upgrade_to_110(): void
+    {
         // Add new options
         $image_options = get_option('WM_image_watermark_options', []);
         $image_options['padding'] = $image_options['padding'] ?? 20;
         $image_options['background'] = $image_options['background'] ?? 'transparent';
         update_option('WM_image_watermark_options', $image_options);
     }
+
+    /**
+     * Set up the React build directory
+     *
+     * Creates the React build directory if it doesn't exist.
+     *
+     * @since  1.1.0
+     * @access private
+     * @return void
+     */
+    private static function setup_react_build_directory(): void
+    {
+        global $wp_filesystem;
+
+        $build_dir = PluginConstants::getPluginDir() . 'admin/build';
+        if (!$wp_filesystem->exists($build_dir)) {
+            wp_mkdir_p($build_dir);
+        }
+    }
 }
-register_activation_hook(__FILE__, function() {
+
+register_activation_hook(__FILE__, function () {
     Database::create_table();
     SettingsHandler::migrate_from_options();
 });
-

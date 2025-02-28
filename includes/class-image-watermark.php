@@ -342,11 +342,11 @@ class ImageWatermark
         }
 
         // Clear any plugin caches (e.g., W3 Total Cache, WP Super Cache)
-        if (function_exists('w3tc_flush_post')) {
-            w3tc_flush_post($attachment_id);
+        if (function_exists('\w3tc_flush_post')) {
+            \w3tc_flush_post($attachment_id);
         }
-        if (function_exists('wp_cache_post_change')) {
-            wp_cache_post_change($attachment_id);
+        if (function_exists('\wp_cache_post_change')) {
+            \wp_cache_post_change($attachment_id);
         }
     }
 
@@ -404,10 +404,10 @@ class ImageWatermark
             $cached_path = str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $cached_path);
 
             if (file_exists($cached_path)) {
-                
+
                 return $cached_path;
             } else {
-                
+
                 delete_transient($cache_key);
             }
         }
@@ -417,53 +417,13 @@ class ImageWatermark
 
         // Cache the resolved path if valid
         if ($resolved_path && file_exists($resolved_path)) {
-           
+
             set_transient($cache_key, $resolved_path, DAY_IN_SECONDS);
             return $resolved_path;
         }
 
-       
+
         return false;
-    }
-
-    public function watermark_all_images($watermark_options = [])
-    {
-        $args = [
-            'post_type' => 'attachment',
-            'post_mime_type' => 'image',
-            'post_status' => 'inherit',
-            'posts_per_page' => -1,
-            'meta_query' => [
-                [
-                    'key' => '_WM_watermarked',
-                    'compare' => 'NOT EXISTS'
-                ]
-            ]
-        ];
-
-        $query = new \WP_Query($args);
-        $results = [
-            'success' => 0,
-            'failed' => 0,
-            'errors' => []
-        ];
-
-        foreach ($query->posts as $image) {
-            try {
-                if ($this->apply_watermark($image->ID, $watermark_options)) {
-                    update_post_meta($image->ID, '_WM_watermarked', '1');
-                    $results['success']++;
-                } else {
-                    $results['failed']++;
-                    $results['errors'][] = "Failed to watermark image {$image->ID}";
-                }
-            } catch (\Exception $e) {
-                $results['failed']++;
-                $results['errors'][] = "Error processing image {$image->ID}: " . $e->getMessage();
-            }
-        }
-
-        return $results;
     }
 
     /**
@@ -475,6 +435,13 @@ class ImageWatermark
      */
     private function backup_original_image($attachment_id, $original_paths)
     {
+        // Initialize WP_Filesystem
+        global $wp_filesystem;
+        if (!is_object($wp_filesystem)) {
+            require_once(ABSPATH . 'wp-admin/includes/file.php');
+            WP_Filesystem();
+        }
+
         $upload_dir = wp_upload_dir();
         $backup_base_dir = path_join($upload_dir['basedir'], 'WM_backups');
         $backup_dir = path_join($backup_base_dir, (string) $attachment_id);
@@ -483,18 +450,18 @@ class ImageWatermark
         $backup_dir = wp_normalize_path($backup_dir);
 
         // Create backup directory with proper permissions
-        if (!file_exists($backup_base_dir)) {
+        if (!$wp_filesystem->exists($backup_base_dir)) {
             if (!wp_mkdir_p($backup_base_dir)) {
                 return false;
             }
-            chmod($backup_base_dir, 0755);
+            $wp_filesystem->chmod($backup_base_dir, FS_CHMOD_DIR);
         }
 
-        if (!file_exists($backup_dir)) {
+        if (!$wp_filesystem->exists($backup_dir)) {
             if (!wp_mkdir_p($backup_dir)) {
                 return false;
             }
-            chmod($backup_dir, 0755);
+            $wp_filesystem->chmod($backup_dir, FS_CHMOD_DIR);
         }
 
         $backup_paths = [];
@@ -515,16 +482,15 @@ class ImageWatermark
             $backup_path = wp_normalize_path($backup_path);
 
             // Ensure original file exists
-            if (!file_exists($original_path)) {
+            if (!$wp_filesystem->exists($original_path)) {
                 $all_copies_successful = false;
                 break;
             }
 
             // Create backup with proper permissions
-            if (@copy($original_path, $backup_path)) {
-                chmod($backup_path, 0644);
+            if ($wp_filesystem->copy($original_path, $backup_path, true)) {
+                $wp_filesystem->chmod($backup_path, FS_CHMOD_FILE);
                 $backup_paths[$size] = $backup_path;
-               
             } else {
                 $all_copies_successful = false;
                 break;
@@ -538,18 +504,17 @@ class ImageWatermark
             // Update metadata with error checking
             $update_result = wp_update_attachment_metadata($attachment_id, $metadata);
             if ($update_result === false) {
-
                 // Try alternative update method
                 $direct_update = update_post_meta($attachment_id, '_wp_attachment_metadata', $metadata);
                 if ($direct_update === false) {
                     // Clean up backup files
                     foreach ($backup_paths as $backup_path) {
-                        if (file_exists($backup_path)) {
-                            unlink($backup_path);
+                        if ($wp_filesystem->exists($backup_path)) {
+                            wp_delete_file($backup_path);
                         }
                     }
-                    if (file_exists($backup_dir) && count(scandir($backup_dir)) <= 2) {
-                        rmdir($backup_dir);
+                    if ($wp_filesystem->exists($backup_dir) && count($wp_filesystem->dirlist($backup_dir)) <= 2) {
+                        $wp_filesystem->rmdir($backup_dir);
                     }
                     return false;
                 } else {
@@ -561,56 +526,17 @@ class ImageWatermark
 
         // Clean up on failure
         foreach ($backup_paths as $backup_path) {
-            if (file_exists($backup_path)) {
-                unlink($backup_path);
+            if ($wp_filesystem->exists($backup_path)) {
+                wp_delete_file($backup_path);
             }
         }
 
         // Only remove directory if empty
-        if (file_exists($backup_dir) && count(scandir($backup_dir)) <= 2) {
-            rmdir($backup_dir);
+        if ($wp_filesystem->exists($backup_dir) && count($wp_filesystem->dirlist($backup_dir)) <= 2) {
+            $wp_filesystem->rmdir($backup_dir);
         }
 
         return false;
-    }
-    /**
-     * Validate and sanitize metadata before update
-     * 
-     * @param array $metadata The metadata to validate
-     * @return array Sanitized metadata
-     */
-    private function sanitize_metadata($metadata)
-    {
-        if (!is_array($metadata)) {
-            return array();
-        }
-
-        // Ensure required metadata fields exist
-        if (!isset($metadata['file'])) {
-            $metadata['file'] = '';
-        }
-
-        if (!isset($metadata['width'])) {
-            $metadata['width'] = 0;
-        }
-
-        if (!isset($metadata['height'])) {
-            $metadata['height'] = 0;
-        }
-
-        // Ensure sizes array exists
-        if (!isset($metadata['sizes']) || !is_array($metadata['sizes'])) {
-            $metadata['sizes'] = array();
-        }
-
-        // Sanitize backup paths
-        if (isset($metadata['WM_backups']) && is_array($metadata['WM_backups'])) {
-            foreach ($metadata['WM_backups'] as $size => $path) {
-                $metadata['WM_backups'][$size] = str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $path);
-            }
-        }
-
-        return $metadata;
     }
 
     /**
@@ -621,6 +547,12 @@ class ImageWatermark
      */
     public function restore_original($attachment_id)
     {
+        // Initialize WP_Filesystem
+        global $wp_filesystem;
+        if (!is_object($wp_filesystem)) {
+            require_once(ABSPATH . 'wp-admin/includes/file.php');
+            WP_Filesystem();
+        }
 
         // Verify attachment exists
         if (!get_post($attachment_id)) {
@@ -642,7 +574,7 @@ class ImageWatermark
             $backup_path = wp_normalize_path($backup_path);
 
             // Ensure backup exists
-            if (!file_exists($backup_path)) {
+            if (!$wp_filesystem->exists($backup_path)) {
                 $failed_sizes[] = $size;
                 continue;
             }
@@ -666,7 +598,7 @@ class ImageWatermark
 
             // Create destination directory if it doesn't exist
             $dest_dir = dirname($dest_path);
-            if (!file_exists($dest_dir)) {
+            if (!$wp_filesystem->exists($dest_dir)) {
                 if (!wp_mkdir_p($dest_dir)) {
                     $failed_sizes[] = $size;
                     continue;
@@ -674,8 +606,8 @@ class ImageWatermark
             }
 
             // Restore the file
-            if (@copy($backup_path, $dest_path)) {
-                chmod($dest_path, 0644);
+            if ($wp_filesystem->copy($backup_path, $dest_path, true)) {
+                $wp_filesystem->chmod($dest_path, FS_CHMOD_FILE);
                 $restored_sizes[] = $size;
             } else {
                 $failed_sizes[] = $size;
@@ -708,6 +640,7 @@ class ImageWatermark
             ]
         );
     }
+
     /**
      * Clean up backup files after successful restore
      * 
@@ -715,26 +648,32 @@ class ImageWatermark
      */
     private function cleanup_backup_files($attachment_id)
     {
+        // Initialize WP_Filesystem
+        global $wp_filesystem;
+        if (!is_object($wp_filesystem)) {
+            require_once(ABSPATH . 'wp-admin/includes/file.php');
+            WP_Filesystem();
+        }
+
         $upload_dir = wp_upload_dir();
         $backup_dir = path_join($upload_dir['basedir'], 'WM_backups', (string) $attachment_id);
 
-        if (file_exists($backup_dir)) {
-            $files = scandir($backup_dir);
+        if ($wp_filesystem->exists($backup_dir)) {
+            $files = $wp_filesystem->dirlist($backup_dir);
             foreach ($files as $file) {
-                if ($file !== '.' && $file !== '..') {
-                    $file_path = path_join($backup_dir, $file);
-                    if (is_file($file_path)) {
-                        unlink($file_path);
+                if ($file['name'] !== '.' && $file['name'] !== '..') {
+                    $file_path = path_join($backup_dir, $file['name']);
+                    if ($file['type'] === 'f') {
+                        wp_delete_file($file_path);
                     }
                 }
             }
             // Only remove directory if empty
-            if (count(scandir($backup_dir)) <= 2) { // . and ..
-                rmdir($backup_dir);
+            if (count($wp_filesystem->dirlist($backup_dir)) <= 2) { // . and ..
+                $wp_filesystem->rmdir($backup_dir);
             }
         }
     }
-
 
     /**
      * Get all watermarked images
@@ -828,6 +767,45 @@ class ImageWatermark
         return $results;
     }
 
+    public function watermark_all_images($watermark_options = [])
+    {
+        $args = [
+            'post_type' => 'attachment',
+            'post_mime_type' => 'image',
+            'post_status' => 'inherit',
+            'posts_per_page' => -1,
+            'meta_query' => [
+                [
+                    'key' => '_WM_watermarked',
+                    'compare' => 'NOT EXISTS'
+                ]
+            ]
+        ];
+
+        $query = new \WP_Query($args);
+        $results = [
+            'success' => 0,
+            'failed' => 0,
+            'errors' => []
+        ];
+
+        foreach ($query->posts as $image) {
+            try {
+                if ($this->apply_watermark($image->ID, $watermark_options)) {
+                    update_post_meta($image->ID, '_WM_watermarked', '1');
+                    $results['success']++;
+                } else {
+                    $results['failed']++;
+                    $results['errors'][] = "Failed to watermark image {$image->ID}";
+                }
+            } catch (\Exception $e) {
+                $results['failed']++;
+                $results['errors'][] = "Error processing image {$image->ID}: " . $e->getMessage();
+            }
+        }
+
+        return $results;
+    }
 
     /**
      * Generates a preview with watermark
@@ -893,6 +871,13 @@ class ImageWatermark
      */
     private function get_preview_image_resource($image_data = null, $options = [])
     {
+        // Initialize WP_Filesystem for file checks
+        global $wp_filesystem;
+        if (!is_object($wp_filesystem)) {
+            require_once(ABSPATH . 'wp-admin/includes/file.php');
+            WP_Filesystem();
+        }
+
         // If image data is provided, create from it
         if ($image_data) {
             $image = @imagecreatefromstring($image_data);
@@ -905,7 +890,7 @@ class ImageWatermark
         $preview_image_id = isset($options['preview_image_id']) ? intval($options['preview_image_id']) : 0;
         if ($preview_image_id > 0) {
             $image_path = get_attached_file($preview_image_id);
-            if ($image_path && file_exists($image_path)) {
+            if ($image_path && $wp_filesystem->exists($image_path)) {
                 $image = $this->create_image_resource($image_path);
                 if ($image instanceof \GdImage) {
                     return $image;
@@ -925,7 +910,7 @@ class ImageWatermark
         $media_query = get_posts($args);
         if (!empty($media_query)) {
             $image_path = get_attached_file($media_query[0]->ID);
-            if ($image_path && file_exists($image_path)) {
+            if ($image_path && $wp_filesystem->exists($image_path)) {
                 $image = $this->create_image_resource($image_path);
                 if ($image instanceof \GdImage) {
                     return $image;
@@ -980,7 +965,6 @@ class ImageWatermark
         }
     }
 
-
     private function url_to_path($url)
     {
         // Remove the protocol and domain
@@ -993,48 +977,6 @@ class ImageWatermark
         return $path;
     }
 
-
-    /**
-     * Generate filename for a specific image size
-     *
-     * @param string $original_filename Original filename
-     * @param int $width Target width
-     * @param int $height Target height
-     * @return string
-     */
-    private function get_sized_filename($original_filename, $width, $height)
-    {
-        $info = pathinfo($original_filename);
-        $ext = $info['extension'];
-        $name = basename($original_filename, ".$ext");
-        return $name . "-{$width}x{$height}.$ext";
-    }
-
-    /**
-     * Force regeneration of thumbnails if needed
-     *
-     * @param int $attachment_id
-     */
-    private function maybe_regenerate_thumbnails($attachment_id)
-    {
-        $metadata = wp_get_attachment_metadata($attachment_id);
-
-        // Get all registered image sizes
-        $sizes = get_intermediate_image_sizes();
-
-        foreach ($sizes as $size) {
-            if (!isset($metadata['sizes'][$size])) {
-                // This size doesn't exist, so regenerate it
-                $fullsizepath = get_attached_file($attachment_id);
-                if ($fullsizepath && file_exists($fullsizepath)) {
-                    $metadata = wp_generate_attachment_metadata($attachment_id, $fullsizepath);
-                    wp_update_attachment_metadata($attachment_id, $metadata);
-                    break; // Break after first regeneration as it will handle all sizes
-                }
-            }
-        }
-    }
-
     /**
      * Resolve watermark path from various input formats
      *
@@ -1043,8 +985,15 @@ class ImageWatermark
      */
     private function resolve_watermark_path($url_or_path)
     {
+        // Initialize WP_Filesystem
+        global $wp_filesystem;
+        if (!is_object($wp_filesystem)) {
+            require_once(ABSPATH . 'wp-admin/includes/file.php');
+            WP_Filesystem();
+        }
+
         // If it's already an absolute server path, return it
-        if (file_exists($url_or_path)) {
+        if ($wp_filesystem->exists($url_or_path)) {
             return $url_or_path;
         }
 
@@ -1055,10 +1004,8 @@ class ImageWatermark
 
         // Convert URL to a path
         $resolved_path = $this->url_to_path($url_or_path);
-        if (file_exists($resolved_path)) {
+        if ($wp_filesystem->exists($resolved_path)) {
             return $resolved_path;
-        } else {
-            error_log('WM: File not found at resolved URL path: ' . $resolved_path);
         }
 
         // Extract path relative to /wp-content/uploads/
@@ -1066,24 +1013,20 @@ class ImageWatermark
             $relative_path = $matches[1];
             $full_path = $uploads_dir . DIRECTORY_SEPARATOR . $relative_path;
             $full_path = str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $full_path);
-
         }
 
         // Fallback: Try resolving by only the filename inside uploads
         $basename_path = path_join($uploads_dir, basename($url_or_path));
-        if (file_exists($basename_path)) {
-           
+        if ($wp_filesystem->exists($basename_path)) {
             return $basename_path;
         }
 
         // Final fallback to a default watermark image
         $default_watermark_path = path_join($uploads_dir, 'default-watermark.png');
-        if (file_exists($default_watermark_path)) {
-           
+        if ($wp_filesystem->exists($default_watermark_path)) {
             return $default_watermark_path;
         }
 
-       
         return false;
     }
 
@@ -1099,16 +1042,16 @@ class ImageWatermark
             $cache_key = 'WM_watermark_path_' . md5($url_or_path);
             delete_transient($cache_key);
         } else {
-            // Clear all WM path caches
-            global $wpdb;
-            $wpdb->query($wpdb->prepare(
-                "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s",
-                '_transient_WM_watermark_path_%'
-            ));
-            $wpdb->query($wpdb->prepare(
-                "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s",
-                '_transient_timeout_WM_watermark_path_%'
-            ));
+            // Use wp_cache functions instead of direct database calls
+            $transients = wp_cache_get('WM_watermark_paths', 'watermark_plugin');
+            if ($transients && is_array($transients)) {
+                foreach ($transients as $transient) {
+                    delete_transient($transient);
+                }
+            }
+
+            // Clear the cache group
+            wp_cache_delete('WM_watermark_paths', 'watermark_plugin');
         }
     }
 
@@ -1119,6 +1062,13 @@ class ImageWatermark
      */
     public function cleanup(int $attachment_id): void
     {
+        // Initialize WP_Filesystem
+        global $wp_filesystem;
+        if (!is_object($wp_filesystem)) {
+            require_once(ABSPATH . 'wp-admin/includes/file.php');
+            WP_Filesystem();
+        }
+
         // Remove watermark-related metadata
         delete_post_meta($attachment_id, '_WM_watermarked');
 
@@ -1126,8 +1076,8 @@ class ImageWatermark
         $metadata = wp_get_attachment_metadata($attachment_id);
         if (isset($metadata['WM_backup'])) {
             $backup_path = $metadata['WM_backup'];
-            if (file_exists($backup_path)) {
-                unlink($backup_path);
+            if ($wp_filesystem->exists($backup_path)) {
+                wp_delete_file($backup_path);
             }
             unset($metadata['WM_backup']);
             wp_update_attachment_metadata($attachment_id, $metadata);
@@ -1135,8 +1085,5 @@ class ImageWatermark
 
         // Clear any cached watermark paths
         $this->clear_watermark_path_cache();
-
-        // Add any other cleanup operations specific to your watermarking process
     }
 }
-

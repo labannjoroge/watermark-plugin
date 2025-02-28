@@ -106,7 +106,6 @@ export const WatermarkProvider = ({ children }) => {
   }, []);
 
   const updateSettings = useCallback((newSettings) => {
-    console.log("Updating settings with:", newSettings);
     return new Promise((resolve) => {
       setWatermarkSettings(newSettings);
       resolve(newSettings);
